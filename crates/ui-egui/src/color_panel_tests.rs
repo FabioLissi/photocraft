@@ -242,6 +242,40 @@ fn panel_menu_switches_modes_and_ramps() {
     menu_click("Copy Color as HTML", |_| {});
 }
 
+/// Photoshop's ⚠ and cube under the chips: a click takes the nearest printable or web colour.
+#[test]
+fn gamut_and_web_warnings_snap_to_the_nearest_colour() {
+    const GAMUT: &str = "Out of gamut for printing: click for the nearest printable colour";
+    const WEB: &str = "Not a web colour: click for the nearest web colour";
+    let mut app = new_app();
+    app.ui.color_panel.mode = ColorPanelMode::Rgb;
+    app.session.tools.foreground = [0xfd as f32 / 255.0, 3.0 / 255.0, 3.0 / 255.0, 1.0];
+    let mut h = harness(app, panel);
+    assert!(h.query_by_label(GAMUT).is_some() && h.query_by_label(WEB).is_some(), "a vivid red is neither printable nor a web colour");
+    h.get_by_label(GAMUT).click();
+    h.run_steps(2);
+    let c = h.state().session.tools.foreground;
+    assert!(crate::color_picker_ui::out_of_gamut([c[0], c[1], c[2]]).is_none(), "snapped to a printable colour: {c:?}");
+    assert!(h.query_by_label(GAMUT).is_none(), "and the warning is gone");
+    h.get_by_label(WEB).click();
+    h.run_steps(2);
+    let c = bytes(h.state().session.tools.foreground);
+    assert!(c.iter().all(|v| v % 0x33 == 0), "snapped to a web colour: {c:?}");
+    assert!(h.query_by_label(WEB).is_none() && h.query_by_label(GAMUT).is_none(), "{c:?}");
+    // The warnings follow the targeted chip and show in the field modes too.
+    let mut app = new_app();
+    app.ui.color_panel.mode = ColorPanelMode::HueCube;
+    app.ui.color_panel.background = true;
+    app.session.tools.background = [0.0, 1.0, 0.0, 1.0];
+    let mut h = harness(app, panel);
+    assert!(h.query_by_label(GAMUT).is_some(), "pure green doesn't print");
+    h.get_by_label(GAMUT).click();
+    h.run_steps(2);
+    let b = h.state().session.tools.background;
+    assert!(crate::color_picker_ui::out_of_gamut([b[0], b[1], b[2]]).is_none() && b[1] > 0.5, "{b:?}");
+    assert_eq!(bytes(h.state().session.tools.foreground), [0, 0, 0], "the foreground is untouched");
+}
+
 #[test]
 fn every_mode_draws_at_dock_widths_without_panicking() {
     for mode in [

@@ -201,7 +201,7 @@ Paragraph; the rest open as in-app floating windows.
 | Panel groups float and tear off into OS windows | missing | UI-217-5, #1828, #1213 |
 | Drag panels to reorder and regroup | partial | #2272, #2305 |
 | Docked resize pushes the neighbour | partial | #2573 |
-| Color panel wheel and RGB/HSB/CMYK/Lab sliders | done | `color_panel.rs`: Hue/Brightness Cube, Color Wheel, Grayscale/RGB/HSB/CMYK/Lab/Web sliders with a ramp, panel menu (2026-10-13, UI-217-17, #2569) |
+| Color panel wheel and RGB/HSB/CMYK/Lab sliders | done | `color_panel.rs`: Hue/Brightness Cube, Color Wheel, Grayscale/RGB/HSB/CMYK/Lab/Web sliders with a ramp, gamut and web warnings, panel menu (2026-10-13, UI-217-17, #2569) |
 | Window size and dock width remembered | done | UI-217-2 |
 | Command palette with recents | done | UI-217-7 |
 | Every preference takes effect | partial | 46 of 149 do nothing (scorecard) |

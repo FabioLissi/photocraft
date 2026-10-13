@@ -273,6 +273,41 @@ pub(crate) fn set_active_color(app: &mut PhotocraftApp, rgb: [f32; 3]) {
     }
 }
 
+/// Photoshop's warnings under the chips, each over a chip of the nearest colour that passes
+/// (a click takes it): ⚠ when the targeted colour is out of gamut for printing in the working
+/// CMYK, a cube when it is not a web colour. `column` is the chips' column; the warnings sit
+/// under the two chips, side by side.
+pub(crate) fn chip_warnings(app: &mut PhotocraftApp, ui: &mut egui::Ui, column: Rect) {
+    let t = Tokens::get(ui.ctx());
+    let c = active_color(app);
+    let rgb = [c[0], c[1], c[2]];
+    let gamut = tl!("Out of gamut for printing: click for the nearest printable colour");
+    let web = tl!("Not a web colour: click for the nearest web colour");
+    let top = column.top() + 41.0;
+    for (slot, warning, tip) in [(0.0, crate::color_picker_ui::out_of_gamut(rgb), gamut), (17.0, crate::color_picker_ui::not_web_safe(rgb), web)] {
+        let Some(near) = warning else { continue };
+        let icon = Rect::from_min_size(pos2(column.left() + 3.0 + slot, top), vec2(13.0, 13.0));
+        let chip = Rect::from_min_size(pos2(icon.left() + 1.5, icon.bottom() + 3.0), vec2(10.0, 10.0));
+        let p = ui.painter();
+        if slot == 0.0 {
+            crate::color_picker_ui::warning_triangle(p, icon, t.text, t.chrome);
+        } else {
+            crate::color_picker_ui::web_cube(p, icon, t.text);
+        }
+        let [r, g, b] = panels::srgb_bytes([near[0], near[1], near[2], 1.0]);
+        p.rect_filled(chip, 0.0, Color32::from_rgb(r, g, b));
+        p.rect_stroke(chip, 0.0, Stroke::new(1.0, t.text_dim), StrokeKind::Outside);
+        let resp = ui.interact(icon.union(chip), ui.id().with(("color-panel-warning", slot as i32)), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tip));
+        if resp.on_hover_text(tip).clicked() {
+            set_active_color(app, near);
+        }
+    }
+}
+
+/// Height of the chips column: the two chips and the warnings under them.
+pub(crate) const CHIP_COLUMN_H: f32 = 70.0;
+
 // ----------------------------------------------------------------------------- sliders
 
 /// The chips beside the sliders of `mode`, the hex readout under them.
@@ -290,8 +325,9 @@ pub(crate) fn sliders(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: ColorPan
     let label_w = label_column(ui, specs);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let (chips, _) = ui.allocate_exact_size(vec2(38.0, (ROW_H * specs.len() as f32).max(40.0)), Sense::hover());
+        let (chips, _) = ui.allocate_exact_size(vec2(38.0, (ROW_H * specs.len() as f32).max(CHIP_COLUMN_H)), Sense::hover());
         panels::field_chips(app, ui, chips);
+        chip_warnings(app, ui, chips);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             for (i, s) in specs.iter().enumerate() {
@@ -506,6 +542,7 @@ fn wheel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.x = 8.0;
         let (chips, _) = ui.allocate_exact_size(vec2(38.0, h), Sense::hover());
         panels::field_chips(app, ui, chips);
+        chip_warnings(app, ui, chips);
         let (area, resp) = ui.allocate_exact_size(vec2(w - 38.0 - 16.0, h), Sense::click_and_drag());
         let center = area.center();
         let (outer, inner, square) = wheel_geometry(center, side);

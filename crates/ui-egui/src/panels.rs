@@ -3520,6 +3520,7 @@ pub(crate) fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: crat
         ui.spacing_mut().item_spacing.x = 8.0;
         let (chips, _) = ui.allocate_exact_size(vec2(38.0, h), Sense::hover());
         field_chips(app, ui, chips);
+        crate::color_panel::chip_warnings(app, ui, chips);
         // SV field.
         let field_w = w - 38.0 - strip_w - 16.0;
         let (field, fresp) = ui.allocate_exact_size(vec2(field_w, h), Sense::click_and_drag());
