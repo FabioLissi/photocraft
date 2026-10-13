@@ -239,15 +239,14 @@ fn join_piece(v: P, d1: P, d2: P, hw: f64, join: LineJoin, miter_limit: f64, tol
     match join {
         LineJoin::Bevel => emit(out, vec![v, a, b]),
         LineJoin::Miter => {
-            // Miter length / width = 1 / sin(θ/2) where θ is the angle between the segments.
-            let half = ((1.0 - d) * 0.5).max(0.0).sqrt(); // sin of half the turning angle
+            // Miter length / width = 1 / sin(θ/2) where θ is the angle between the segments,
+            // i.e. 1 / cos of half the turning angle.
             let cos_half = ((1.0 + d) * 0.5).max(0.0).sqrt();
             if cos_half < 1e-9 || 1.0 / cos_half > miter_limit {
                 emit(out, vec![v, a, b]);
             } else {
                 let bis = norm(add(n1, n2));
                 let m = add(v, mul(bis, hw / cos_half));
-                let _ = half;
                 emit(out, vec![v, a, m, b]);
             }
         }
@@ -313,13 +312,16 @@ pub fn dash_polyline(pl: &Polyline, pattern: &[f64], offset: f64) -> Vec<Polylin
     if !total.is_finite() || total <= 1e-9 || pl.pts.len() < 2 {
         return Vec::new();
     }
-    let mut pts = pl.pts.clone();
-    let mut knots = pl.knot.clone();
-    knots.resize(pts.len(), true);
-    if pl.closed {
+    // Only a closed polyline needs a copy (with its first point repeated at the end).
+    let pts: std::borrow::Cow<[P]> = if pl.closed {
+        let mut pts = pl.pts.clone();
         pts.push(pl.pts[0]);
-        knots.push(true);
-    }
+        pts.into()
+    } else {
+        pl.pts.as_slice().into()
+    };
+    // Knot flags past the source's (and the repeated closing point) count as knots.
+    let knot_at = |i: usize| i >= pl.pts.len() || pl.knot.get(i).copied().unwrap_or(true);
     // Position in the pattern.
     let mut idx = 0usize;
     let mut left = pat[0];
@@ -337,21 +339,26 @@ pub fn dash_polyline(pl: &Polyline, pattern: &[f64], offset: f64) -> Vec<Polylin
     let mut out = Vec::new();
     let mut cur: Option<Polyline> = if idx.is_multiple_of(2) { Some(Polyline { pts: vec![pts[0]], knot: vec![true], closed: false }) } else { None };
     let mut guard = 0usize;
-    for (wi, w) in pts.windows(2).enumerate() {
+    'walk: for (wi, w) in pts.windows(2).enumerate() {
         let (a, b) = (w[0], w[1]);
-        let b_knot = knots[wi + 1];
+        let b_knot = knot_at(wi + 1);
         let seg = len(sub(b, a));
         let mut pos = 0.0;
         while seg - pos > 1e-12 {
             guard += 1;
-            if guard > 100_000 {
-                // Bound allocations and time, including file-provided patterns. Commands
-                // reject patterns that exceed this budget before document mutation.
-                return Vec::new();
-            }
             let step = left.min(seg - pos);
-            if step > 0.0 && pos + step == pos {
-                return Vec::new();
+            if guard > 100_000 || (step > 0.0 && pos + step == pos) {
+                // Past the step budget (which bounds allocations and time for file-provided
+                // patterns; commands reject such patterns before mutating the document) or
+                // dashes below the coordinates' precision: keep the dashes made so far and draw
+                // the rest of the line solid rather than dropping the whole stroke (#5195).
+                let here = if pos > 0.0 { add(a, mul(sub(b, a), pos / seg)) } else { a };
+                let rest = cur.get_or_insert_with(|| Polyline { pts: vec![here], knot: vec![true], closed: false });
+                for (j, p) in pts.iter().enumerate().skip(wi + 1) {
+                    rest.pts.push(*p);
+                    rest.knot.push(knot_at(j));
+                }
+                break 'walk;
             }
             pos += step;
             left -= step;
@@ -451,11 +458,38 @@ mod tests {
     #[test]
     fn invalid_and_too_dense_dashes_finish_with_bounded_work() {
         let pl = line(&[(0.0, 0.0), (100.0, 0.0)], false);
-        for pattern in [vec![0.0, 0.0], vec![f64::INFINITY, 1.0], vec![f64::NAN, 1.0], vec![-1.0, 2.0], vec![1.0; 33], vec![1e-8, 1e-8]] {
+        for pattern in [vec![0.0, 0.0], vec![f64::INFINITY, 1.0], vec![f64::NAN, 1.0], vec![-1.0, 2.0], vec![1.0; 33]] {
             assert!(dash_polyline(&pl, &pattern, 0.0).is_empty());
         }
         assert!(dash_polyline(&pl, &[2.0, 1.0], f64::INFINITY).is_empty());
         assert!(dash_polyline(&line(&[(f64::NAN, 0.0), (1.0, 0.0)], false), &[2.0, 1.0], 0.0).is_empty());
+        // Too dense for the step budget: bounded work, and the line is still drawn.
+        let d = dash_polyline(&pl, &[1e-8, 1e-8], 0.0);
+        assert!(!d.is_empty() && d.len() <= 50_001);
+        assert_eq!(d.last().and_then(|p| p.pts.last()), Some(&(100.0, 0.0)));
+    }
+
+    #[test]
+    fn dashes_past_the_step_budget_keep_the_rest_of_the_line_solid() {
+        // An SVG `stroke-dasharray="0.5 0.5"` along 60000 px needs more steps than the budget:
+        // the stroke used to vanish entirely (#5195). The dashes made so far stay, the rest of
+        // the line (through its later vertices) is drawn solid.
+        let pl = line(&[(0.0, 0.0), (60_000.0, 0.0), (60_000.0, 1000.0)], false);
+        let d = dash_polyline(&pl, &[0.5, 0.5], 0.0);
+        assert!(d.len() > 40_000, "{} dashes", d.len());
+        assert_eq!(d[0].pts, [(0.0, 0.0), (0.5, 0.0)]);
+        let tail = d.last().unwrap();
+        assert_eq!(tail.pts.last(), Some(&(60_000.0, 1000.0)));
+        assert!(tail.pts.contains(&(60_000.0, 0.0)) && tail.pts.len() == tail.knot.len());
+        // The solid tail starts where the dashes stopped (100000 steps of 0.5 px).
+        assert!((tail.pts[0].0 - 50_000.0).abs() < 1.0 && tail.pts[0].1 == 0.0, "{:?}", tail.pts[0]);
+        // Closed outlines finish the same way, back to their first point, where the solid tail
+        // joins the first dash (one piece with a join at the seam, no caps).
+        let outline = line(&[(0.0, 0.0), (60_000.0, 0.0), (60_000.0, 1000.0), (0.0, 1000.0)], true);
+        let d = dash_polyline(&outline, &[0.5, 0.5], 0.0);
+        let joined = &d[0];
+        assert!(joined.pts.contains(&(60_000.0, 1000.0)) && joined.pts.contains(&(0.0, 1000.0)) && joined.pts.contains(&(0.0, 0.0)));
+        assert_eq!(joined.pts.last(), Some(&(0.5, 0.0)));
     }
 
     #[test]
