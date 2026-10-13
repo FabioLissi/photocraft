@@ -128,6 +128,8 @@ async fn events_poll_follows_edits_and_saves() {
     assert_eq!(r["events"][2]["data"]["path"], json!(out.to_string_lossy()));
     let r = call(&client, "events_poll", json!({"since": 0, "events": ["nope"]})).await;
     assert_eq!(r.is_error, Some(true), "{}", text(&r));
+    // The server holds the saved file until it is shut down (Windows refuses to remove it before).
+    client.cancel().await.unwrap();
     cleanup(&dir);
 }
 
