@@ -1677,7 +1677,15 @@ fn complete_cow<'a>(
             // is its surroundings.
             None if sources.len() > 0 && !thin => onion_peel(lw, lh, ch, ri, &mut limg, &lpx, hb, &sources.all(&valid, lw), ctl)?,
             None => {
-                let unknown: Vec<bool> = lpx.iter().map(|k| matches!(k, Px::Hole | Px::Void)).collect();
+                let mut unknown: Vec<bool> = lpx.iter().map(|k| matches!(k, Px::Hole | Px::Void)).collect();
+                // Across a thin hole the membrane starts a patch radius out, past the
+                // anti-aliased fringe or halo that a selection drawn close to the object leaves.
+                if thin {
+                    let hole: Vec<bool> = lpx.iter().map(|k| *k == Px::Hole).collect();
+                    for (u, d) in unknown.iter_mut().zip(crate::selection::edt(&hole, lw, lh)) {
+                        *u |= d <= r as f32;
+                    }
+                }
                 let m = membrane_fill(lw, lh, ch, &limg, &unknown);
                 for (i, k) in lpx.iter().enumerate() {
                     if *k == Px::Hole {

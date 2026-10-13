@@ -474,8 +474,10 @@ pub fn auto_sampling_with(w: usize, h: usize, ch: usize, img: &[f32], hole: &[bo
     let mut cost_fg = vec![0.0f32; sw * sh];
     let mut cost_bg = vec![0.0f32; sw * sh];
     let mut fixed = vec![FREE; sw * sh];
+    // Always the hole's own edge, and around a thin selection each part's surroundings.
+    let keep = thin_band(sw, sh, &shole);
     for i in 0..sw * sh {
-        if shole[i] || dist[i] <= 1.5 {
+        if shole[i] || dist[i] <= keep {
             fixed[i] = HARD_FG;
             continue;
         }
@@ -506,6 +508,22 @@ pub fn auto_sampling_with(w: usize, h: usize, ch: usize, img: &[f32], hole: &[bo
         return Ok(everything());
     }
     Ok(out)
+}
+
+/// How far around a thin selection (strings, wires, and any small parts selected with them, all
+/// at most a quarter as thick as the selection is long) the Auto area always reaches, in cells of
+/// a `w × h` grid: as far as the selection is thick, so that each part, however far from the
+/// rest, keeps its own surroundings to copy from. 1.5 cells for any other selection.
+fn thin_band(w: usize, h: usize, hole: &[bool]) -> f32 {
+    let inside = crate::selection::edt(&hole.iter().map(|h| !h).collect::<Vec<_>>(), w, h);
+    let thickness = 2.0 * inside.iter().zip(hole).filter(|(_, h)| **h).map(|(d, _)| *d).fold(0.0f32, f32::max);
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for (i, _) in hole.iter().enumerate().filter(|(_, h)| **h) {
+        let (x, y) = (i % w, i / w);
+        (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+    }
+    let extent = x1.saturating_sub(x0).max(y1.saturating_sub(y0)) as f32;
+    if 4.0 * thickness <= extent { thickness.max(1.5) } else { 1.5 }
 }
 
 /// The Patch Tool's and the Content-Aware Move Tool's Color option (0–10) as the colour adaptation
@@ -752,6 +770,31 @@ mod tests {
     }
 
     #[test]
+    fn auto_sampling_keeps_the_surroundings_of_every_part_of_a_thin_selection() {
+        // A long thin selection across a grey ramp, and a small knob selected with it in a red
+        // corner. Each part keeps its own surroundings; a compact selection is unchanged.
+        let (w, h) = (900, 600);
+        let tex = noise(w, h, 4);
+        let img: Vec<f32> = (0..w * h * 3)
+            .map(|i| {
+                let (x, y, c) = ((i / 3) % w, (i / 3) / w, i % 3);
+                let base = if x > 690 && y > 420 { [0.7, 0.25, 0.2][c] } else { 0.2 + 0.5 * x as f32 / w as f32 };
+                base + (tex[i] - 0.5) * 0.04
+            })
+            .collect();
+        let line = |i: usize| (30..870).contains(&(i % w)) && (180..192).contains(&(i / w));
+        let knob = |i: usize| ((i % w) as f32 - 795.0).hypot((i / w) as f32 - 510.0) < 10.0;
+        let hole: Vec<bool> = (0..w * h).map(|i| line(i) || knob(i)).collect();
+        let area = auto_sampling(w, h, 3, &img, &hole);
+        let around_knob = (0..w * h).filter(|&i| !hole[i] && ((i % w) as f32 - 795.0).hypot((i / w) as f32 - 510.0) < 24.0);
+        let (n, kept) = around_knob.fold((0, 0), |(n, k), i| (n + 1, k + usize::from(area[i])));
+        assert!(kept as f32 > 0.9 * n as f32, "{kept} of {n} pixels around the knob");
+        assert!(thin_band(w, h, &hole) >= 20.0, "{}", thin_band(w, h, &hole));
+        let disc: Vec<bool> = (0..w * h).map(|i| ((i % w) as f32 - 450.0).hypot((i / w) as f32 - 300.0) < 90.0).collect();
+        assert_eq!(thin_band(w, h, &disc), 1.5);
+    }
+
+    #[test]
     fn without_colour_adaptation_the_fill_copies_pixels_exactly() {
         // A smooth texture with fine noise, so that every value is unique: a filled pixel equal to
         // an image pixel was copied from it. Photoshop's fill (colour adaptation None) is such
@@ -811,7 +854,7 @@ mod tests {
             .map(|i| {
                 let (x, y, c) = (((i / 3) % w) as f32 / w as f32, ((i / 3) / w) as f32 / h as f32, i % 3);
                 let mut v = [0.18 + 0.25 * x, 0.22 + 0.1 * y, 0.3 - 0.1 * x][c];
-                for b in blob.chunks_exact(3) {
+                for b in blob.as_chunks::<3>().0 {
                     let (bx, by, s) = (b[0] * 1.6 - 0.3, b[1] * 1.6 - 0.3, 0.1 + 0.25 * b[2]);
                     v += (b[(c + 1) % 3] - 0.2) * 0.5 * (-((x - bx).powi(2) + (y - by).powi(2) * 0.56) / (2.0 * s * s)).exp();
                 }
