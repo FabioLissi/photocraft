@@ -18,7 +18,8 @@
 //!
 //!   A thin hole (a selected wire, string or hair: long, but only a few patches thick) is
 //!   measured by its thickness, not its bounds (#1366): the pyramid stops where it is still about
-//!   two patches thick, and that level starts from a membrane across it, which over so short a
+//!   two patches thick. That level is big, so the onion peel starts it only where its exhaustive
+//!   search stays affordable; otherwise a membrane across the hole does, which over so short a
 //!   distance is the surroundings themselves. Shrunk to where its bounds are four patches across,
 //!   a long thin hole swallows its surroundings, the matches found there copy whatever happens to
 //!   look like the blur (a dark blotch, or a piece of another string), and the finer levels,
@@ -305,6 +306,17 @@ fn hole_thickness(w: usize, hb: Bounds, px: &[Px]) -> usize {
     });
     let deepest = crate::selection::edt(&outside, gw, gh).into_iter().fold(0.0f32, f32::max);
     (2.0 * deepest).ceil() as usize
+}
+
+/// Most target pixels × sources the onion peel of a thin hole may compare (its search is
+/// exhaustive, though most comparisons stop early: about a second at this many).
+const PEEL_BUDGET: usize = 1 << 28;
+
+/// Whether the onion peel of the hole cells within `hb` of a `w`-wide role grid from `sources`
+/// source centres stays within [`PEEL_BUDGET`].
+fn peel_affordable(w: usize, px: &[Px], hb: Bounds, sources: usize) -> bool {
+    let holes: usize = (hb.y0..hb.y1).map(|y| px.get(y * w + hb.x0..y * w + hb.x1).map_or(0, |row| row.iter().filter(|k| **k == Px::Hole).count())).sum();
+    holes.saturating_mul(sources) <= PEEL_BUDGET
 }
 
 /// Bounds of the hole pixels of a role grid.
@@ -1673,9 +1685,11 @@ fn complete_cow<'a>(
                     }
                 }
             }
-            // A thin hole takes the membrane below: a few patches thick here, a membrane across it
-            // is its surroundings.
-            None if sources.len() > 0 && !thin => onion_peel(lw, lh, ch, ri, &mut limg, &lpx, hb, &sources.all(&valid, lw), ctl)?,
+            // A thin hole, when peeling it would take too long, takes the membrane below: a few
+            // patches thick here, a membrane across it is its surroundings.
+            None if sources.len() > 0 && (!thin || peel_affordable(lw, &lpx, hb, sources.len())) => {
+                onion_peel(lw, lh, ch, ri, &mut limg, &lpx, hb, &sources.all(&valid, lw), ctl)?
+            }
             None => {
                 let mut unknown: Vec<bool> = lpx.iter().map(|k| matches!(k, Px::Hole | Px::Void)).collect();
                 // Across a thin hole the membrane starts a patch radius out, past the
